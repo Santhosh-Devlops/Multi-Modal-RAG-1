@@ -1,0 +1,19 @@
+{
+  "agents": [
+    {
+      "id": "cline",
+      "name": "Cline",
+      "extension_id": "saoudrizwan.claude-dev",
+      "detected": true,
+      "rules_path": ".clinerules\\cross-agent-protocol.md",
+      "inbox_path": ".autoclaw/orchestrator/comms/inboxes/cline/",
+      "hooks_supported": false,
+      "last_heartbeat": null,
+      "status": "detected",
+      "loop_mechanism": "plain-message",
+      "keepalive_template": "templates/keepalive/kilocode.md"
+    }
+  ],
+  "ide": "Visual Studio Code",
+  "provisioned_at": "2026-08-29T16:50:02.009Z"
+}

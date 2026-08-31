@@ -1,0 +1,18 @@
+version: '3.8'
+
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      - SECRET_KEY=university-internship-multimodal-rag-secret-key-2026
+      - DEMO_2FA_CODE=123456
+      - ENABLE_LOCAL_FALLBACK=true
+    volumes:
+      - ./backend/data:/app/backend/data
+      - ./backend/uploads:/app/backend/uploads
+      - ./backend/extracted_images:/app/backend/extracted_images
+      - ./backend/vector_index:/app/backend/vector_index
