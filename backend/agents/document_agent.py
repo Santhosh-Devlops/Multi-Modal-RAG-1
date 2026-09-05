@@ -60,15 +60,33 @@ class DocumentProcessingAgent:
                 raw_images = pdf_res["images"]
                 tables_data = pdf_res["tables"]
                 
-                # Separate Images into Generic Images vs Graphs/Visuals
+                # Caption every extracted figure with the vision-language model, then
+                # split into generic Images vs Graphs/Visuals using the real caption
+                # (previously this caption step was never invoked for PDF figures at
+                # all, so every image/graph chunk sent to the vector index carried an
+                # empty description and the chat assistant had no real understanding
+                # of any figure in the document).
                 for img in raw_images:
                     page_text = pages_data[img["page_number"] - 1]["page_text"] if img["page_number"] <= len(pages_data) else ""
-                    
-                    # Detect if it's a graph/chart/schematic
-                    is_graph_or_chart = any(w in page_text.lower() or w in img.get("image_type", "").lower() for w in [
-                        "chart", "graph", "diagram", "schematic", "circuit", "flowchart", "workflow", "histogram", "architecture", "curve"
-                    ])
-                    
+
+                    caption_info = ImageService.generate_image_description(
+                        img.get("local_filepath", ""), page_text, domain
+                    )
+                    img["generated_description"] = caption_info["description"]
+                    img["confidence_score"] = caption_info["confidence"]
+                    if caption_info["image_type"] not in ("Figure (uncaptioned)", "Unknown"):
+                        img["image_type"] = caption_info["image_type"]
+
+                    # Detect if it's a graph/chart/schematic using BOTH the real caption
+                    # and nearby page text (caption is far more reliable than page text alone).
+                    is_graph_or_chart = any(
+                        w in page_text.lower() or w in caption_info["description"].lower() or w in img.get("image_type", "").lower()
+                        for w in [
+                            "chart", "graph", "diagram", "schematic", "circuit", "flowchart",
+                            "workflow", "histogram", "architecture", "curve", "plot", "trend"
+                        ]
+                    )
+
                     if is_graph_or_chart:
                         graph_info = GraphService.analyze_graph_or_visual(img, page_text, domain)
                         graph_info["page_number"] = img["page_number"]
