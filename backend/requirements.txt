@@ -19,3 +19,11 @@ matplotlib>=3.8.3
 reportlab>=4.1.0
 pytest>=8.1.1
 httpx>=0.27.0
+python-dotenv>=1.0.1
+# Optional but recommended: enables real local (network-free) embeddings
+# instead of depending on Hugging Face's free feature-extraction API, which
+# only serves a small curated list of models and can 400 on valid model
+# names ("not supported by provider hf-inference"). Pulls in torch
+# (~1-2GB) - safe to skip on constrained hosting; the app falls back
+# gracefully to the HF API, then to a local hash-based vector, either way.
+# sentence-transformers>=3.0.0
