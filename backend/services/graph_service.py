@@ -38,20 +38,30 @@ class GraphService:
         labels = re.findall(r"\b[A-Z][a-zA-Z0-9_-]{2,}\b", page_text[:400])
         labels = list(dict.fromkeys(labels))[:8]
 
-        # Extract Axis & Trend Info
-        axis_info = "X-Axis: Operating Timeline / Stage | Y-Axis: Measured Parameter"
-        trend_summary = "Demonstrates nominal operating bands and multi-stage workflow transitions."
-        if graph_type in ["Line Graph", "Bar Chart"]:
-            axis_info = "X-Axis: Time / Operational Cycles | Y-Axis: Output / Efficiency Metric"
-            trend_summary = "Shows stable performance within defined safety thresholds with minimal variance."
-        elif graph_type == "Technical Schematic":
-            axis_info = "Flow Direction: Left-to-Right Signal / Hydraulic Flow"
-            trend_summary = "Closed-loop feedback circuit interconnecting power and control sensors."
+        # Prefer the real vision-model caption (when available) for the trend
+        # summary / explanation - only fall back to a generic templated
+        # description if no real caption was produced (no HF token configured).
+        real_caption = image_info.get("generated_description", "").strip()
+        has_real_caption = bool(real_caption) and "captioning is unavailable" not in real_caption.lower()
 
-        visual_explanation = (
-            f"{graph_type} titled '{title}'. Displays key components: {', '.join(labels[:5]) if labels else 'System modules'}. "
-            f"{trend_summary} {axis_info}."
-        )
+        if has_real_caption:
+            axis_info = "See figure caption below for axis/label details."
+            trend_summary = real_caption
+            visual_explanation = f"{graph_type} titled '{title}'. {real_caption}"
+        else:
+            axis_info = "X-Axis: Operating Timeline / Stage | Y-Axis: Measured Parameter"
+            trend_summary = "Demonstrates nominal operating bands and multi-stage workflow transitions."
+            if graph_type in ["Line Graph", "Bar Chart"]:
+                axis_info = "X-Axis: Time / Operational Cycles | Y-Axis: Output / Efficiency Metric"
+                trend_summary = "Shows stable performance within defined safety thresholds with minimal variance."
+            elif graph_type == "Technical Schematic":
+                axis_info = "Flow Direction: Left-to-Right Signal / Hydraulic Flow"
+                trend_summary = "Closed-loop feedback circuit interconnecting power and control sensors."
+
+            visual_explanation = (
+                f"{graph_type} titled '{title}'. Displays key components: {', '.join(labels[:5]) if labels else 'System modules'}. "
+                f"{trend_summary} {axis_info}."
+            )
 
         return {
             "graph_type": graph_type,
