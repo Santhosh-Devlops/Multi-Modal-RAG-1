@@ -1,89 +1,109 @@
-import os
 from pathlib import Path
-from typing import Dict, Any
-from PIL import Image
-import requests
+from typing import Any, Dict
 
-from config import HUGGINGFACE_API_KEY, IMAGE_MODEL, ENABLE_LOCAL_FALLBACK
+from PIL import Image
+
+from config import TEXT_GENERATION_MODEL
+from services import huggingface as hf_client
+
+CAPTION_PROMPT = (
+    "You are a scientific document analyst. Describe this figure precisely and "
+    "concisely for someone who cannot see it. Cover: (1) what kind of visual it is "
+    "(photo, plot/chart, schematic, architecture diagram, flowchart, screenshot, etc.), "
+    "(2) the key elements, axes, labels or components visible, (3) any trend, "
+    "relationship or result the figure appears to communicate, and (4) any text, "
+    "numbers, units or legend entries you can read in it. "
+    "Do not invent details you cannot actually see. Answer in 3-5 sentences, plain text."
+)
+
 
 class ImageService:
     @staticmethod
     def generate_image_description(image_path: str, context_text: str = "", domain: str = "Manufacturing") -> Dict[str, Any]:
         """
-        Generate semantic visual description for an extracted image.
-        Uses Hugging Face Vision Inference API if available, otherwise generates
-        an intelligent domain-grounded visual analysis based on image properties and page context.
+        Generate a semantic visual description for an extracted image/figure.
+
+        Uses a vision-language model (via the HF Router chat-completions API,
+        see services/huggingface.py) when a token is configured. This is what
+        actually lets the chat assistant "understand" figures, charts and
+        diagrams instead of just knowing an image exists on some page.
+
+        When no token is configured, this returns an honest, clearly-labeled
+        placeholder rather than a fabricated domain-flavoured caption (e.g.
+        making up "hydraulic circuit routing" for a random picture) - a
+        fabricated caption is worse than no caption because it gets indexed
+        and can mislead the chat assistant's answers.
         """
         resolved_path = Path(image_path)
         if not resolved_path.exists():
             return {
-                "description": f"Technical illustration from {domain} documentation.",
-                "image_type": "Diagram",
-                "confidence": 0.80
+                "description": "Image file not found on disk; no visual caption available.",
+                "image_type": "Unknown",
+                "confidence": 0.0,
             }
-            
+
         width, height = 0, 0
+        image_bytes = b""
         try:
             with Image.open(resolved_path) as img:
                 width, height = img.size
+                rgb = img.convert("RGB") if img.mode != "RGB" else img
+                import io
+                buf = io.BytesIO()
+                rgb.save(buf, format="PNG")
+                image_bytes = buf.getvalue()
         except Exception:
             pass
-            
-        # Check if Hugging Face API key is present
-        if HUGGINGFACE_API_KEY:
-            try:
-                api_url = f"https://api-inference.huggingface.co/models/{IMAGE_MODEL}"
-                headers = {"Authorization": f"Bearer {HUGGINGFACE_API_KEY}"}
-                with open(resolved_path, "rb") as f:
-                    img_bytes = f.read()
-                response = requests.post(api_url, headers=headers, data=img_bytes, timeout=12)
-                if response.status_code == 200:
-                    data = response.json()
-                    if isinstance(data, list) and len(data) > 0 and "generated_text" in data[0]:
-                        caption = data[0]["generated_text"].strip()
-                        return {
-                            "description": f"Visual Diagram ({caption}). Context: {context_text[:150]}",
-                            "image_type": "Schematic / Photographic Figure",
-                            "confidence": 0.94
-                        }
-            except Exception as e:
-                print(f"HF Vision API failed, using fallback: {e}")
 
-        # Intelligent Deterministic Fallback Analyzer
-        aspect_ratio = width / height if height > 0 else 1.0
-        
-        # Categorize visual layout
+        if image_bytes and hf_client.is_configured():
+            prompt = CAPTION_PROMPT
+            if context_text:
+                prompt += f"\n\nSurrounding page text for extra context (may or may not relate to this exact figure): {context_text[:400]}"
+            caption = hf_client.caption_image(image_bytes, prompt, model=TEXT_GENERATION_MODEL)
+            if caption:
+                img_type = ImageService._classify_from_caption(caption)
+                return {
+                    "description": caption,
+                    "image_type": img_type,
+                    "confidence": 0.93,
+                }
+
+        # Honest fallback: no vision model available / call failed.
+        aspect_ratio = width / height if height else 1.0
         if aspect_ratio > 1.4:
-            layout_desc = "wide landscape schematic / flow diagram"
-            img_type = "Schematic Diagram"
+            shape_hint = "a wide, landscape-oriented figure (often a chart, timeline or wide diagram)"
         elif aspect_ratio < 0.7:
-            layout_desc = "tall vertical cross-section assembly drawing"
-            img_type = "Cross-Section / Technical Drawing"
+            shape_hint = "a tall, portrait-oriented figure (often a flowchart or stacked diagram)"
         else:
-            layout_desc = "detailed component architecture and layout view"
-            img_type = "System Block Diagram"
-            
-        # Domain-aware context synthesis
-        if domain == "Manufacturing":
-            desc = f"Engineering diagram ({layout_desc}) illustrating machine subsystem components, hydraulic/mechanical circuit routing, and operating control valves."
-        elif domain == "Healthcare":
-            desc = f"Medical diagnostic imaging and equipment schematic ({layout_desc}) detailing RF sensor coils, gradient field topology, and patient positioning subsystem."
-        elif domain == "Finance":
-            desc = f"Financial performance chart and operational metrics visualization ({layout_desc}) showing fiscal expenditure breakdown and revenue trajectory."
-        elif domain == "Education":
-            desc = f"Educational technical diagram ({layout_desc}) illustrating kinematic coordinate systems, actuator linkages, and feedback sensor loop connections."
-        elif domain == "Defence":
-            desc = f"Aerospace avionics engineering blueprint ({layout_desc}) depicting flight control actuators, telemetry radar modules, and environmental safety limits."
-        else:
-            desc = f"Technical illustration and system diagram ({layout_desc}) showing component relationships and operational specifications."
-            
-        if context_text:
-            first_sentence = context_text.split(".")[0].strip()
-            if first_sentence:
-                desc += f" Associated topic on page: {first_sentence}."
-                
+            shape_hint = "a roughly square figure"
+
+        desc = (
+            f"Visual captioning is unavailable right now (no vision model configured or the call failed), "
+            f"so this is only a placeholder: this is {shape_hint} extracted from the document"
+            + (f", located near text about: \"{context_text.split('.')[0].strip()[:140]}\"." if context_text else ".")
+            + " Configure HUGGINGFACE_API_TOKEN in the backend .env to get real figure descriptions."
+        )
         return {
             "description": desc,
-            "image_type": img_type,
-            "confidence": 0.89
+            "image_type": "Figure (uncaptioned)",
+            "confidence": 0.3,
         }
+
+    @staticmethod
+    def _classify_from_caption(caption: str) -> str:
+        c = caption.lower()
+        if any(w in c for w in ["line graph", "bar chart", "pie chart", "plot", "histogram", "scatter"]):
+            return "Chart / Plot"
+        if any(w in c for w in ["flowchart", "flow diagram", "workflow", "pipeline"]):
+            return "Flowchart / Pipeline Diagram"
+        if any(w in c for w in ["architecture", "block diagram", "system diagram", "framework diagram"]):
+            return "Architecture Diagram"
+        if any(w in c for w in ["schematic", "circuit", "wiring"]):
+            return "Schematic"
+        if any(w in c for w in ["screenshot", "interface", "ui"]):
+            return "Screenshot"
+        if any(w in c for w in ["table"]):
+            return "Table Image"
+        if any(w in c for w in ["photo", "photograph"]):
+            return "Photograph"
+        return "Figure / Diagram"
