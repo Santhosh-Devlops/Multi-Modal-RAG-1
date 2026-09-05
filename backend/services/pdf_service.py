@@ -89,36 +89,56 @@ class PDFService:
                 except Exception as e:
                     print(f"Notice during image extract xref {xref}: {e}")
             
-            # Step 1.2: Check for labeled figures on the page (Fig. 1, Fig. 2, Figure 1) and crop them
-            fig_matches = re.finditer(r"\b(?:Fig\.|Figure)\s*(\d+[a-z]?)\b", page_text, re.IGNORECASE)
-            for fm in fig_matches:
-                fig_label = fm.group(0)
-                fig_num = fm.group(1)
-                
-                # Search location of Figure text
-                rects = page.search_for(fig_label)
-                if rects:
+            # Step 1.2: Vector-drawn figures (matplotlib/plot exports, IEEE-style vector
+            # charts, etc.) have no embedded raster image for Step 1 to find, so we still
+            # need to catch "Fig. N" / "Figure N" captions and render that region as a
+            # pixmap crop. This ONLY runs when the page produced zero raster images in
+            # Step 1 - otherwise a real image was already extracted and captioned, and
+            # running this text-position heuristic too would create a duplicate, poorly
+            # cropped, uncaptioned entry for the same figure.
+            # The crop is appended to `images` (not `graphs`) so it goes through the same
+            # vision captioning + image/graph classification pipeline as every other
+            # figure, instead of getting a hand-written, generic "graph" description.
+            if page_image_count == 0:
+                fig_matches = list(re.finditer(r"\b(?:Fig\.|Figure)\s*(\d+[a-z]?)\b", page_text, re.IGNORECASE))
+                seen_fig_nums = set()
+                for fm in fig_matches:
+                    fig_label = fm.group(0)
+                    fig_num = fm.group(1)
+                    if fig_num in seen_fig_nums:
+                        continue  # a figure is usually referenced multiple times; crop it once
+
+                    rects = page.search_for(fig_label)
+                    if not rects:
+                        continue
                     f_rect = rects[0]
-                    # Crop above or below caption
-                    crop_rect = fitz.Rect(max(0, f_rect.x0 - 150), max(0, f_rect.y0 - 220), min(page.rect.width, f_rect.x1 + 150), min(page.rect.height, f_rect.y1 + 40))
-                    if crop_rect.width > 100 and crop_rect.height > 80:
-                        try:
-                            pix = page.get_pixmap(clip=crop_rect, dpi=180)
-                            graph_filename = f"graph_doc_{doc_id}_p{page_num}_fig_{fig_num}.png"
-                            graph_filepath = EXTRACTED_IMAGES_DIR / graph_filename
-                            pix.save(str(graph_filepath))
-                            
-                            results["graphs"].append({
-                                "page_number": page_num,
-                                "title": f"{fig_label} (Page {page_num})",
-                                "graph_type": "Schematic / Flow Diagram",
-                                "image_path": f"/api/static/images/{graph_filename}",
-                                "visual_explanation": f"Rendered diagram and visual schematic corresponding to {fig_label} on Page {page_num}.",
-                                "axis_info": "Visual graph coordinate mapping",
-                                "trend_summary": "Extracted architectural and process flow diagram."
-                            })
-                        except Exception as e:
-                            print(f"Notice cropping figure {fig_label}: {e}")
+                    # Vector figures are almost always drawn ABOVE their caption line, so bias
+                    # the crop upward rather than symmetrically around the caption text.
+                    crop_rect = fitz.Rect(
+                        max(0, f_rect.x0 - 180), max(0, f_rect.y0 - 260),
+                        min(page.rect.width, f_rect.x1 + 180), min(page.rect.height, f_rect.y1 + 15)
+                    )
+                    if crop_rect.width <= 100 or crop_rect.height <= 80:
+                        continue
+                    try:
+                        pix = page.get_pixmap(clip=crop_rect, dpi=200)
+                        fig_filename = f"vecfig_doc_{doc_id}_p{page_num}_fig_{fig_num}.png"
+                        fig_filepath = EXTRACTED_IMAGES_DIR / fig_filename
+                        pix.save(str(fig_filepath))
+                        seen_fig_nums.add(fig_num)
+
+                        results["images"].append({
+                            "page_number": page_num,
+                            "image_path": f"/api/static/images/{fig_filename}",
+                            "local_filepath": str(fig_filepath),
+                            "image_name": f"{fig_label} (Page {page_num}, vector figure)",
+                            "width": int(crop_rect.width),
+                            "height": int(crop_rect.height),
+                            "image_type": "Vector Figure"
+                        })
+                        page_image_count += 1
+                    except Exception as e:
+                        print(f"Notice cropping vector figure {fig_label}: {e}")
             
             results["pages"].append({
                 "page_number": page_num,
